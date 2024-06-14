@@ -3,15 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --experimental-https",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "@lit-protocol/auth-helpers": "^6.0.3",
+    "@lit-protocol/lit-auth-client": "^6.0.3",
+    "@lit-protocol/lit-node-client": "^6.0.3",
+    "@simplewebauthn/browser": "^10.0.0",
+    "next": "14.2.4",
     "react": "^18",
-    "react-dom": "^18",
-    "next": "14.2.4"
+    "react-dom": "^18"
   },
   "devDependencies": {
     "eslint": "^8",

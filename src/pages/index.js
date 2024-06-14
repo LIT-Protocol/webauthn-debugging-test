@@ -3,112 +3,177 @@ import Image from "next/image";
 import { Inter } from "next/font/google";
 import styles from "@/styles/Home.module.css";
 
+import * as LitJsSdk from "@lit-protocol/lit-node-client";
+import {
+  LitAbility,
+  LitPKPResource,
+  RecapSessionCapabilityObject,
+} from "@lit-protocol/auth-helpers";
+import { ProviderType, AuthMethodScope } from "@lit-protocol/constants";
+import {
+  GoogleProvider,
+  WebAuthnProvider,
+  LitAuthClient,
+  isSignInRedirect,
+} from "@lit-protocol/lit-auth-client";
+
 const inter = Inter({ subsets: ["latin"] });
 
 export default function Home() {
+  async function getNodeClient() {
+    const litNodeClient = new LitJsSdk.LitNodeClient({
+      litNetwork: "cayenne",
+    });
+    await litNodeClient.connect();
+    return litNodeClient;
+  }
+
+  async function createPkpAndLogin(litNodeClient, litAuthClient) {
+    if (!litNodeClient || !litAuthClient) {
+      console.log("Please wait for lit node client to connect, then try again");
+      return;
+    }
+    litAuthClient.initProvider(ProviderType.WebAuthn);
+    const provider = litAuthClient.getProvider(ProviderType.WebAuthn);
+    // Register new WebAuthn credential
+    const options = await provider.register();
+
+    // Verify registration and mint PKP through relay server
+    const txHash = await provider.verifyAndMintPKPThroughRelayer(options, {
+      addPkpEthAddressAsPermittedAddress: true,
+      sendPkpToItself: true,
+    });
+    // console.log("txHash");
+    // console.log(txHash);
+    const res = await provider.relay.pollRequestUntilTerminalState(txHash);
+    // Return public key of newly minted PKP
+    console.log(res);
+    const pkp = {
+      tokenId: res.pkpTokenId,
+      pkpPublicKey: res.pkpPublicKey,
+      ethAddress: res.pkpEthAddress,
+    };
+    const authMethod = await provider.authenticate();
+    return {
+      ...authMethod,
+      ...pkp,
+    };
+  }
+
+  async function createSession(litNodeClient, session) {
+    const {
+      authMethodType,
+      accessToken,
+      pkpPublicKey,
+      // capacityDelegationAuthSig,
+    } = session;
+
+    //session key-pair to sign to get session sigs
+    const sessionKeyPair = litNodeClient.getSessionKey();
+
+    //SIWE ReCap Object
+    const sessionCapabilityObject = new RecapSessionCapabilityObject();
+    const litPkpResource = new LitPKPResource(session.tokenId.substr(2));
+    sessionCapabilityObject.addCapabilityForResource(
+      litPkpResource,
+      LitAbility.PKPSigning
+    );
+
+    //AuthSig Callback
+    // const authNeededCallback = async (params) => {
+    //   const response = await litNodeClient.signSessionKey({
+    //     sessionKey: sessionKeyPair,
+    //     authMethods: [
+    //       {
+    //         authMethodType: getAuthMethodType(authMethodId),
+    //         accessToken:
+    //           getAuthMethodType(authMethodId) === AuthMethodType.WebAuthn
+    //             ? getPasskeyAuthMethod(accessToken)
+    //             : accessToken,
+    //       },
+    //     ],
+    //     domain: config.relayUrl,
+    //     pkpPublicKey: pkpPublicKey,
+    //     expiration: params.expiration,
+    //     resources: params.resources,
+    //     chainId: 1,
+    //     resourceAbilityRequests: [
+    //       {
+    //         resource: litPkpResource,
+    //         ability: LitAbility.PKPSigning,
+    //       },
+    //     ],
+    //   });
+    //   return response.authSig;
+    // };
+
+    //Generate session signatures
+    const sessionSigs = await litNodeClient.getPkpSessionSigs({
+      chain: "ethereum",
+      expiration: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(),
+      resourceAbilityRequests: [
+        {
+          resource: litPkpResource,
+          ability: LitAbility.PKPSigning,
+        },
+      ],
+      sessionKey: sessionKeyPair,
+      // authNeededCallback,
+      //@ts-ignore
+      // capacityDelegationAuthSig,
+      sessionCapabilityObject,
+      pkpPublicKey,
+      authMethods: [{ authMethodType, accessToken }],
+    });
+    return sessionSigs;
+  }
+
+  async function go() {
+    try {
+      //Connect to Lit Nodes
+      let litNodeClient = await getNodeClient();
+      if (!litNodeClient || !litNodeClient.ready) {
+        console.error("lit node client not initialized");
+        //@ts-ignore
+        // litNodeClient = await initNodeClient();
+      }
+
+      const litAuthClient = new LitAuthClient({
+        litNodeClient,
+        litRelayConfig: {
+          relayApiKey: "its_chris",
+        },
+      });
+
+      // mint PKP and login
+      const sessionData = await createPkpAndLogin(litNodeClient, litAuthClient);
+      console.log("sessionData created", sessionData);
+
+      //create session
+      const session = await createSession(litNodeClient, sessionData);
+      console.log(`session generated`);
+      //sign message
+      let textEncoder = new TextEncoder();
+      const toSign = textEncoder.encode("This message is exactly 32 bytes"); // typically this would be a txn to sign
+      const result = await litNodeClient.pkpSign({
+        pubKey: sessionData.pkpPublicKey,
+        chain: "ethereum",
+        sessionSigs: session,
+        toSign,
+      });
+      console.log(`signed message`);
+      console.log(result);
+      const signature = result.signature;
+      console.log(`signature ${signature}`);
+    } catch (err) {
+      console.error("error signing via pkp", {
+        err,
+      });
+    }
+  }
   return (
     <>
-      <Head>
-        <title>Create Next App</title>
-        <meta name="description" content="Generated by create next app" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-      <main className={`${styles.main} ${inter.className}`}>
-        <div className={styles.description}>
-          <p>
-            Get started by editing&nbsp;
-            <code className={styles.code}>src/pages/index.js</code>
-          </p>
-          <div>
-            <a
-              href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              By{" "}
-              <Image
-                src="/vercel.svg"
-                alt="Vercel Logo"
-                className={styles.vercelLogo}
-                width={100}
-                height={24}
-                priority
-              />
-            </a>
-          </div>
-        </div>
-
-        <div className={styles.center}>
-          <Image
-            className={styles.logo}
-            src="/next.svg"
-            alt="Next.js Logo"
-            width={180}
-            height={37}
-            priority
-          />
-        </div>
-
-        <div className={styles.grid}>
-          <a
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Docs <span>-&gt;</span>
-            </h2>
-            <p>
-              Find in-depth information about Next.js features and&nbsp;API.
-            </p>
-          </a>
-
-          <a
-            href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Learn <span>-&gt;</span>
-            </h2>
-            <p>
-              Learn about Next.js in an interactive course with&nbsp;quizzes!
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Templates <span>-&gt;</span>
-            </h2>
-            <p>
-              Discover and deploy boilerplate example Next.js&nbsp;projects.
-            </p>
-          </a>
-
-          <a
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template&utm_campaign=create-next-app"
-            className={styles.card}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <h2>
-              Deploy <span>-&gt;</span>
-            </h2>
-            <p>
-              Instantly deploy your Next.js site to a shareable URL
-              with&nbsp;Vercel.
-            </p>
-          </a>
-        </div>
-      </main>
+      <button onClick={go}>Click me</button>
     </>
   );
 }
